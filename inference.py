@@ -1,0 +1,129 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Sun Mar 10 20:07:49 2024
+
+@author: PriyaPrabhakar
+"""
+import os
+import yaml
+import subprocess
+import torch
+import torch.nn as nn
+import torchio as tio
+from pathlib import Path
+from torch import nn
+from torch.utils.data import Dataset, DataLoader, random_split
+import torch
+from unet3d import*
+from train_3d_patch import*
+import torchio as tio
+from pathlib import Path
+import statistics
+import numpy as np
+from unet_r import *
+from monai.losses import FocalLoss, DiceLoss, DiceCELoss, TverskyLoss, DiceFocalLoss
+import nibabel as nib
+
+def load_config(file_path):
+    with open(file_path, 'r') as file:
+        config = yaml.safe_load(file)
+    return config
+
+# Path to the YAML file
+yaml_file_path = os.path.join(os.getcwd(), 'config.yaml')
+config = load_config(yaml_file_path)
+
+def nnunet_inference(config):
+    """
+    This function performs inference using the nnUNet model on the test images specified in the configuration.
+    It sets up the environment variables, invokes the nnUNet prediction command, and saves the output masks
+    in the specified output folder.
+
+    Parameters:
+    - config (dict): A dictionary containing configuration parameters.
+
+    Returns:
+    - None
+    """
+# Load configuration from YAML file
+    config = load_config(yaml_file_path)
+    
+    os.environ["nnUNet_raw"] = config["nnUNet_raw"]
+    os.environ["nnUNet_preprocessed"] = config["nnUNet_preprocessed"]
+    os.environ["nnUNet_results"] = config["nnUNet_results"] 
+    # Set environment variables
+    
+    
+    os.system(r'nnUNetv2_predict -i {} -o {} -d {} -c "{} -f {}'
+              .format(config['test_folder'], config['output_folder_segmentation'], config['nnunet_dataset_id'],
+                      config['nnunet_configuration'], config['nnunet_fold']))
+
+
+def unet_inference(config):
+    """
+    This function performs inference using a U-Net model on the test images specified in the configuration.
+    It loads the pre-trained model, applies transformations to the test images, predicts the segmentation masks,
+    and saves the output masks in the specified output folder.
+
+    Parameters:
+    - config (dict): A dictionary containing configuration parameters.
+
+    Returns:
+    - None
+    """
+    
+    inference_dir = config['output_folder']
+    image_names = os.listdir(config['test_folder'])
+    image_paths = sorted(config['test_folder'].glob('*.nii.gz'))
+    threshold = 0.5
+    median_spacing = [0.748, 0.748, 1]
+    patch_size = [128, 128, 128]
+    patch_overlap = [64, 64, 64]
+    max_value = 800
+    min_value = -1000
+    test_transform = tio.Compose([
+        tio.ToCanonical(),
+        tio.Resample(median_spacing),
+        tio.Clamp(out_min=min_value, out_max=max_value),
+        tio.ZNormalization()
+    ])
+
+    subjects = []
+    for image_path in image_paths:
+        im = tio.ScalarImage(image_path)
+        im_n = test_transform(im)
+        subject = tio.Subject(image=im_n)
+        subjects.append(subject)
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model = UNet(device)
+    model.load_state_dict(torch.load(r'C:\Users\PriyaPrabhakar\Downloads\Aorta_segmentation-new\New folder\model.pth', map_location=device))
+    model.to(device)
+    model = model.float()
+    temp = 0
+    for subject in subjects:
+        grid_sampler = tio.inference.GridSampler(
+            subject,
+            patch_size,
+            patch_overlap,
+        )
+        patch_loader = torch.utils.data.DataLoader(grid_sampler, batch_size=1)
+        aggregator = tio.inference.GridAggregator(grid_sampler, overlap_mode='hann')
+        with torch.no_grad():
+            for patches_batch in patch_loader:
+                input_tensor = patches_batch['image'][tio.DATA].to(device)
+                locations = patches_batch[tio.LOCATION]
+                logits = model(input_tensor)
+                y_pred = torch.sigmoid(logits)
+                labels = (y_pred > threshold)
+                outputs = labels.float()
+                aggregator.add_batch(outputs, locations)
+        output_tensor = aggregator.get_output_tensor()
+        output_image = tio.ScalarImage(tensor=output_tensor.numpy())
+        # # Load the original input image
+        input_image_path = os.path.join(config['test_folder'], image_names[temp])
+        img_raw = nib.load(input_image_path)
+        # # Create a NIfTI image from the output image
+        mask_n = nib.Nifti1Image(output_image['data'], affine=img_raw.affine)
+        nib.save(mask_n, os.path.join(inference_dir, image_names[temp]))
+        temp = temp+1

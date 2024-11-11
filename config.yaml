@@ -1,0 +1,10 @@
+model: nnunet
+nnUNet_preprocessed: E:\pc\nnunet_final\nnUNet_preprocessed
+nnUNet_raw: E:\pc\nnunet_final\nnUNet_raw
+nnUNet_results: E:\pc\nnunet_final\nnUNet_results
+nnunet_configuration: 3d_fullres
+nnunet_dataset_id: '06'
+nnunet_fold: '2'
+output_folder_ga: C:\Users\PriyaPrabhakar\Desktop\output
+output_folder_segmentation: C:\Users\PriyaPrabhakar\Desktop\output
+test_folder: C:\Users\PriyaPrabhakar\Desktop\test_folder
